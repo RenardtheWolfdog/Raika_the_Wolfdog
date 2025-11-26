@@ -235,7 +235,13 @@ class RedisManager:
             params = {"vec": vec_bytes}
 
             # 3. 검색 실행
-            results = await self.client.ft(self.index_name).search(q, params=params)
+            # [수정] redis-py 최신 버전에서는 params 대신 query_params를 사용하는 경우가 있음
+            # 또는 버전에 따라 params가 맞을 수도 있으나, 오류가 발생하므로 query_params로 변경 시도
+            try:
+                results = await self.client.ft(self.index_name).search(q, query_params=params)
+            except TypeError:
+                # 만약 query_params도 아니라면 params로 재시도 (혹은 구버전 호환)
+                results = await self.client.ft(self.index_name).search(q, params=params)
 
             # 4. 결과 파싱 및 반환
             parsed_results = []

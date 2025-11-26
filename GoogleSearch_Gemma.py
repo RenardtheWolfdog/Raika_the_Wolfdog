@@ -957,13 +957,14 @@ def generate_search_keywords_langchain(original_query: str, current_query: str, 
         추가적인 맥락 정보: {{additional_context_str}}
         {f"이전 검색 결과 요약: {{search_history_summary}}" if search_history_summary else ""}
 
-        위 정보를 바탕으로, 사용자의 원본 질문에 더 정확하고 유용한 답변을 찾기 위한 **새로운** 구글 검색 질의 2-3개를 제안하세요.
-        지켜야 할 원칙:
-        - 원본 질문에 등장하는 핵심 고유명사/모델명/주요 키워드는 반드시 포함합니다.
-        - "가격/스펙/비교/요약/정보" 같은 일반어만 단독으로 제시하지 말고, 필요 시 반드시 핵심 키워드와 결합합니다.
-        - 뉴스/학문/논문/가이드/게임/서적 등 어떤 도메인에도 통용되도록, 주제를 더 구체화하거나 하위 주제로 세분화하세요.
-        - 질의는 쉼표로 구분하고, 각 질의는 3~8어절 내로 간결하게 작성합니다.
-        - 더 이상 개선된 질의를 제안하기 어렵다면, "더 이상 좋은 키워드 없음"만 출력합니다.
+        위 정보를 바탕으로, 사용자의 원본 질문에 더 정확하고 유용한 답변을 찾기 위한 **새로운** 구글 검색 질의 3-4개를 제안하세요.
+        
+        **핵심 지침 (Query Rewriting Strategy):**
+        1. **다국어 확장**: 원본 질문이 한국어라도, (한국 고유의 컨텐츠가 아니라면) 정보량이 많은 **영어(English)** 검색어를 반드시 1~2개 포함하세요. (예: '남미 영화 편지' -> 'South American movie letter writing')
+        2. **구체적 묘사**: "가격/정보" 같은 단순 키워드보다는, 질문의 묘사적 특징(description)을 살린 구체적인 구문(phrase)을 사용하세요.
+        3. **엔티티 보존**: 고유명사, 연도, 특정 행위 등 핵심 엔티티는 유지하되, 동의어나 유의어로 변형하여 시도하세요.
+        4. **형식**: 질의는 쉼표(,)로 구분하고, 각 질의는 간결하게 작성하세요.
+        5. 더 이상 개선된 질의가 없다면 "더 이상 좋은 키워드 없음"만 출력하세요.
 
         새로운 검색 질의:
         """
@@ -1035,7 +1036,29 @@ def generate_search_keywords_langchain(original_query: str, current_query: str, 
         elif not llm_raw_output: # LLM 응답이 비어있는 경우
             logging.warning(f"GoogleSearch_Gemma (generate_search_keywords_langchain): LLM returned empty keywords for query '{original_query}'. Using original query as fallback.")
         else:
-            keywords_str = llm_raw_output # 정상 응답이면 키워드로 사용
+            # [25.11.26 파싱 강화] LLM 출력이 번호 목록이나 개행으로 구분될 경우 처리
+            # 예: "1. kw1\n2. kw2" -> "kw1, kw2"
+            cleaned_lines = []
+            for line in llm_raw_output.split('\n'):
+                line = line.strip()
+                if not line: continue
+                # 번호(1., 1)) 및 불렛(-, *) 제거
+                line = re.sub(r'^[\d]+[\.\)]\s*|^[\-\*]\s*', '', line)
+                # 앞뒤 따옴표 제거
+                line = line.strip('"\'')
+                if line:
+                    cleaned_lines.append(line)
+            
+            # 줄바꿈으로 분리된 항목들을 콤마로 연결
+            joined_text = ",".join(cleaned_lines)
+            
+            # 콤마로 재분리하여 깔끔한 리스트 생성
+            final_kws = [k.strip() for k in joined_text.split(',') if k.strip()]
+            
+            if final_kws:
+                keywords_str = ", ".join(final_kws)
+            else:
+                keywords_str = llm_raw_output # 파싱 실패 시 원본 사용 (fallback)
         
         logging.info(f"GoogleSearch_Gemma (generate_search_keywords_langchain): Generated keywords '{keywords_str}' for query '{original_query}' (LLM raw: '{llm_raw_output}')")
     except Exception as e:
