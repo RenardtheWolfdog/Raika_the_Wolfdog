@@ -4635,10 +4635,9 @@ async def chat_with_model(user_input_raw, session_id, image=None, media_files_in
     # 외부에서 재구성한 상태이므로, 함수 내부에서 중복으로 저장/추가하지 않도록 하는 플래그입니다.
     skip_user_save: bool = bool(kwargs.get('skip_user_save', False))
     if not skip_user_save:
-        # 사용자 입력을 Redis 장기 기억에 비동기로 저장 (실시간성 확보)
-        # 대화의 맥락을 위해, 응답 생성과는 별개로 '사용자의 말' 그 자체를 기억함.
-        if memory_system and user_input_text:
-            asyncio.create_task(memory_system.save_turn(session_id, "user", user_input_text))         
+        # [수정] 사용자 입력 단독 저장 제거 -> 응답 생성 후 Interaction(Q&A)으로 묶어서 저장하도록 변경
+        # if memory_system and user_input_text:
+        #     asyncio.create_task(memory_system.save_turn(session_id, "user", user_input_text))         
 
         # 인메모리 히스토리 업데이트 (대화 기록)
         conversation_history.append({"role": user_name, "message": user_input_text, "timestamp": datetime.now().isoformat()}) # MongoDB 저장 형식과 유사하게
@@ -4734,9 +4733,11 @@ async def chat_with_model(user_input_raw, session_id, image=None, media_files_in
 
     # 챗봇의 응답을 redis와 MongoDB에 저장 (스트리밍/비스트리밍 모두 동일하게 저장하되, 중단 시 후처리된 텍스트가 저장됨)
     if response_text and response_text.strip():
-        # redis에 저장 (장기 기억으로 활용)
-        if memory_system:
-            asyncio.create_task(memory_system.save_turn(session_id, "bot", response_text))
+        # redis에 저장 (장기 기억으로 활용) - [수정] Interaction(Q&A) 단위로 저장하여 검색 품질 향상
+        if memory_system and user_input_text:
+            # 질문과 답변을 묶어서 저장 (검색 시 질문의 의도와 답변의 내용을 함께 파악 가능)
+            asyncio.create_task(memory_system.save_interaction(session_id, user_input_text, response_text))
+            
         if not skip_user_save: # edit_turn 시에는 이미 수정된 메시지로 대화 기록(history)과 문맥(context)을 외부에서 재구성한 상태이므로, 함수 내부에서 중복으로 저장/추가하지 않도록 하는 플래그
             # MongoDB에 저장
             await async_save_message(session_id, bot_name, response_text)
@@ -4908,9 +4909,9 @@ async def Recent_conversation(session_id: str, conversation_context: List[str]):
     try:
         if memory_system and last_user_message:
             # Redis Vector DB에서 검색 (Hybrid: Vector + Keyword)
-            # top_k=4: 가장 관련성 높은 4개의 기억을 가져옴
+            # top_k=5: 가장 관련성 높은 5개의 기억을 가져옴
             retrieved_memories = await memory_system.retrieve_relevant_memories(
-                session_id, last_user_message, top_k=4
+                session_id, last_user_message, top_k=5
             )
             
             if retrieved_memories:

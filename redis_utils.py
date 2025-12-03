@@ -225,7 +225,7 @@ class RedisManager:
 
             # KNN(K-Nearest Neighbors) 검색 쿼리 결합
             # vector_score는 코사인 유사도 값(작을수록 유사도 높음)으로 거리 값을 반환
-            q = Query(f"{base_query}=>[KNN {top_k} @embedding $vec AS score]")\
+            q = Query(f"{base_query}=>[KNN {top_k} @embedding $vec AS vector_score]")\
                 .sort_by("vector_score")\
                 .return_fields("text", "role", "keywords", "timestamp", "vector_score")\
                 .dialect(2) # RediSearch 2.0 호환 쿼리 문법
