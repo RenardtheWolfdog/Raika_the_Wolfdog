@@ -104,12 +104,37 @@ def _resolve_device_name() -> str:
     CUDA가 요청되었지만 사용 불가하면 자동으로 CPU로 폴백합니다.
     """
     device_name = (DEFAULT_DEVICE or "").strip().lower() or "cpu"
-    if device_name.startswith("cuda") and not torch.cuda.is_available():
-        LOGGER.warning(
-            "CUDA 장치가 요청되었지만 사용 불가합니다. CPU로 폴백합니다. "
-            "PyTorch CUDA 빌드가 필요하면 CUDA 지원 버전의 torch를 설치하세요."
-        )
-        device_name = "cpu"
+    
+    if device_name.startswith("cuda"):
+        if not torch.cuda.is_available():
+            LOGGER.warning(
+                "CUDA 장치가 요청되었지만 사용 불가합니다. CPU로 폴백합니다. "
+                "PyTorch CUDA 빌드가 필요하면 CUDA 지원 버전의 torch를 설치하세요."
+            )
+            device_name = "cpu"
+        else:
+            # VRAM 여유 공간 확인
+            try:
+                # 현재 디바이스의 메모리 정보 (free, total)
+                free_mem, total_mem = torch.cuda.mem_get_info()
+                free_mem_gb = free_mem / (1024 ** 3)
+                total_mem_gb = total_mem / (1024 ** 3)
+                
+                LOGGER.info(f"GPU 메모리 상태: 여유 {free_mem_gb:.2f}GB / 전체 {total_mem_gb:.2f}GB")
+                
+                # 최소 요구량 (DeepSeek-OCR/VL 모델은 꽤 큼, 최소 4GB~8GB 필요 예상)
+                # 안전하게 2GB 미만이면 경고
+                if free_mem_gb < 2.0:
+                    LOGGER.error(
+                        f"경고: GPU 여유 메모리가 매우 부족합니다 ({free_mem_gb:.2f}GB). "
+                        "모델 로딩 중 OOM(Out Of Memory)으로 프로세스가 강제 종료될 수 있습니다. "
+                        "다른 GPU 프로세스를 종료하거나 DEEPSEEK_OCR_DEVICE='cpu'로 설정하세요."
+                    )
+                    # 여기서 강제로 CPU로 바꿀 수도 있지만, 사용자가 원할 수 있으므로 경고만 함
+                    # device_name = "cpu" 
+            except Exception as e:
+                LOGGER.warning(f"GPU 메모리 확인 실패: {e}")
+
     if device_name.startswith("mps") and not torch.backends.mps.is_available():  # pragma: no cover (macOS 전용)
         LOGGER.warning("MPS 장치가 요청되었지만 사용 불가합니다. CPU로 폴백합니다.")
         device_name = "cpu"
@@ -134,27 +159,34 @@ def _ensure_model():
 
     LOGGER.info("DeepSeek-OCR 모델을 로드합니다: %s", DEFAULT_MODEL_ID)
     # 251108 - .pdf, OCR 문서 전용 처리 로직
+    LOGGER.info("Tokenizer 로딩 시작...")
     _ocr_tokenizer = AutoTokenizer.from_pretrained(
         DEFAULT_MODEL_ID,
         trust_remote_code=True,
     )
+    LOGGER.info("Tokenizer 로딩 완료. Model 로딩 시작...")
+    # 메모리 절약을 위해 torch_dtype 설정 추가
+    # 주의: DeepSeek-OCR 모델 코드(modeling_deepseekocr.py) 내부에서 masked_scatter_ 사용 시
+    # 입력 이미지(Float)와 모델 가중치(Half/BFloat16) 간 타입 불일치 오류가 발생할 수 있음.
+    # 따라서 안전하게 float32로 로드하거나, 로드 후 내부에서 캐스팅을 처리해야 함.
+    # 현재는 오류 방지를 위해 float32를 우선 사용하고, OOM 발생 시에만 양자화를 고려해야 함.
+    dtype = torch.float32  # Half/Float 충돌 방지를 위해 float32 강제
+    
     _ocr_model = AutoModel.from_pretrained(
         DEFAULT_MODEL_ID,
         trust_remote_code=True,
         use_safetensors=True,
+        torch_dtype=dtype,
     )
+    LOGGER.info("Model 로딩 완료. Device 설정 중...")
     device_name = _resolve_device_name()
     _effective_device_name = device_name
     device = torch.device(device_name)
-    if device.type == "cpu":
-        _ocr_model.to(device=device)
-    else:
-        dtype = torch.bfloat16 if device.type == "cuda" else None
-        if dtype is not None:
-            _ocr_model.to(device=device, dtype=dtype)
-        else:
-            _ocr_model.to(device=device)
+    
+    # 이미 dtype으로 로드했으므로 device 이동만 수행
+    _ocr_model.to(device)
     _ocr_model.eval()
+    LOGGER.info(f"Model 로딩 및 설정 완료. Device: {device_name}")
 
 
 def _hash_pdf_bytes(pdf_bytes: bytes) -> str:
@@ -417,6 +449,7 @@ def _run_infer_on_image_file(image_path: str, prompt: str, output_dir: str, page
     
     try:
         LOGGER.debug(f"[Infer] 이미지 추론 시작: {page_num}")
+        LOGGER.info(f"[Infer] _ocr_model.infer 호출 직전 (Device: {_effective_device_name})")
         
         with torch.inference_mode():
             infer_result = _ocr_model.infer(
@@ -431,6 +464,7 @@ def _run_infer_on_image_file(image_path: str, prompt: str, output_dir: str, page
                 test_compress=False,
             )
         
+        LOGGER.info(f"[Infer] _ocr_model.infer 호출 완료")
         # infer_result 타입 및 내용 로깅
         LOGGER.debug(
             f"[Infer] infer_result 타입: {type(infer_result)}, "

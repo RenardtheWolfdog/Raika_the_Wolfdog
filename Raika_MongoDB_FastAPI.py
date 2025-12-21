@@ -111,7 +111,12 @@ async def async_load_session(session_id: str):
         conversation_context = session_data.get('conversation_context', [])
 
         # Flask 버전과 동일한 컨텍스트 재구성 및 파일 URL 처리 로직 유지
-        if not conversation_context and conversation_history: # 컨텍스트 비었으면 기록으로 재구성
+        # [핵심 수정]
+        # conversation_context는 conversation_history로부터 파생되는 "캐시"라서,
+        # 과거 버그/저장 누락으로 일부만 들어있는 경우가 자주 발생할 수 있음.
+        # 이때 context가 비어있지 않더라도 history 대비 짧으면 재구성하여 최신 대사를 반영한다.
+        should_rebuild_context = (not conversation_context) or (conversation_history and len(conversation_context) < len(conversation_history))
+        if should_rebuild_context and conversation_history: # 컨텍스트 비었거나(또는 부분 저장) 기록으로 재구성
             conversation_context = []
             for msg in conversation_history:
                 role = msg.get('role')

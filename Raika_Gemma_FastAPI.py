@@ -481,7 +481,7 @@ def get_gpu_memory_usage():
     return 0.0
 
 # 배치 처리를 위한 함수 (메모리 정리로 VRAM 최적화)
-def process_in_batches(output_generator, *args, batch_size=100, max_length=8000):
+def process_in_batches(output_generator, *args, batch_size=100, max_length=16000):
     full_response = ""
     current_batch = ""
 
@@ -4738,9 +4738,17 @@ async def chat_with_model(user_input_raw, session_id, image=None, media_files_in
             # 질문과 답변을 묶어서 저장 (검색 시 질문의 의도와 답변의 내용을 함께 파악 가능)
             asyncio.create_task(memory_system.save_interaction(session_id, user_input_text, response_text))
             
-        if not skip_user_save: # edit_turn 시에는 이미 수정된 메시지로 대화 기록(history)과 문맥(context)을 외부에서 재구성한 상태이므로, 함수 내부에서 중복으로 저장/추가하지 않도록 하는 플래그
-            # MongoDB에 저장
-            await async_save_message(session_id, bot_name, response_text)
+        # MongoDB에 저장
+        # [중요] skip_user_save는 "사용자 턴 저장/추가"만 스킵하기 위한 용도여야 합니다.
+        # edit_turn 흐름에서는 히스토리/컨텍스트를 재구성한 뒤 새 봇 답변을 생성하므로,
+        # 봇 응답 및 컨텍스트는 항상 저장되어야 session_loaded 재조회에서 최신이 반영됩니다.
+        await async_save_message(session_id, bot_name, response_text)
+        # [핵심 수정] conversation_history는 저장되지만 conversation_context가 저장되지 않아 DB에 일부만 남는 이슈 방지
+        # handle_general_conversation 내부에서 conversation_context가 갱신되므로, 여기서는 "최종 상태"를 한 번에 저장한다.
+        try:
+            await async_save_context(session_id, conversation_context)
+        except Exception:
+            pass
     
     return response_text
     

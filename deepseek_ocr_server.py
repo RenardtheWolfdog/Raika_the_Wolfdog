@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Optional
+from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -17,8 +18,6 @@ from deepseek_ocr_types import serialize_pdf_ocr_result
 from deepseek_pdf_pipeline import extract_text_from_pdf_bytes_cached
 
 LOGGER = logging.getLogger("deepseek_ocr_server")
-
-app = FastAPI(title="DeepSeek OCR Service", version="1.0.0")
 
 _redis_client: Optional["redis.Redis"] = None
 _redis_ttl: Optional[int] = None
@@ -43,8 +42,8 @@ async def _init_redis_client() -> Optional["redis.Redis"]:
     return client
 
 
-@app.on_event("startup")
-async def on_startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global _redis_client, _redis_ttl
 
     logging.basicConfig(
@@ -55,13 +54,16 @@ async def on_startup():
     _redis_ttl_env = os.environ.get("DEEPSEEK_OCR_REDIS_TTL")
     _redis_ttl = int(_redis_ttl_env) if _redis_ttl_env else None
     _redis_client = await _init_redis_client()
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
+    
+    yield
+    
     if _redis_client is not None:
         await _redis_client.close()
         LOGGER.info("Redis 연결을 종료했습니다.")
+
+
+app = FastAPI(title="DeepSeek OCR Service", version="1.0.0", lifespan=lifespan)
+
 
 
 @app.get("/health")
